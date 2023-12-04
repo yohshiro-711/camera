@@ -1,0 +1,283 @@
+<html lang="ja">
+
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <script src="https://code.jquery.com/jquery-3.7.1.slim.min.js"></script>
+</head>
+
+<body>
+  <h3 style="margin-top: 5px; margin-bottom: 5px;">DevicePixelRatio: <span id="devicePixelRatio"></span></h3>
+  <h3 style="margin-top: 5px; margin-bottom: 5px;">Screen Orientation Angle: <span id="screenAngle"></span></h3>
+  <h3 style="margin-top: 5px; margin-bottom: 5px;"><span id="deviceIds"></span></h3>
+
+  <!--<input type="file" class="d-none" accept="image/*" capture="camera" @change="onCaptureImage"><br>-->
+  <img ref="preview" style="display:block;max-width:100%;"><br>
+  <input type="button" value="Start camera" onClick="startCamera();">
+  <!--<input type="button" value="Shot" onClick="shot();">-->
+  <!--<input type="button" value="Change track" onClick="changeTrack();">-->
+  <input type="button" value="Native Save(90%)" onClick="saveNativeImage();">
+  <input type="button" value="HiDPI Save(90%)" onClick="saveHiDPIImage();">
+  <input type="button" value="HiDPI Save(無圧縮)" onClick="saveHiDPIImage2();">
+  <input type="button" value="ImageCapture" onClick="saveImageCapture();">
+  <br>
+  <hr>
+
+  <div id="cardCaptureContainer" style="background-color: #dd00aa; padding: 10px;" onClick="shot();">
+    <video id="cardCaptureVideo" style="background-color: #ddff00;">video screen.</video>
+  </div>
+  
+  <h3 style="margin-bottom: 2px;">Native Canvas</h3>
+  <div style="padding: 10px;">
+    <canvas id="native" style="border: 1px solid black;"></canvas>
+  </div>
+
+  <h3 style="margin-bottom: 2px;">High DPI Canvas</h3>
+  <div style="padding: 10px;">
+    <canvas id="hdpi" style="border: 1px solid black;"></canvas>
+  </div>
+
+</body>
+
+<script>
+  $(window).resize(function() {
+    // ピクセル解像度の比率を取得
+    $('#devicePixelRatio').text(window.devicePixelRatio);
+    // 画面の向き
+    $('#screenAngle').text(screen.orientation.angle);
+  });
+  $(document).ready(function () {
+
+    window.picWidth = 450;
+    window.picHeight = 270;
+
+    // カメラのエリアサイズを設定
+    $('#cardCaptureContainer').css('width', picWidth);
+    $('#cardCaptureContainer').css('height', picHeight);
+    $('#cardCaptureVideo').css('width', picWidth);
+    $('#cardCaptureVideo').css('height', picHeight);
+
+    // ピクセル解像度の比率を取得
+    $('#devicePixelRatio').text(window.devicePixelRatio);
+    // 画面の向き
+    $('#screenAngle').text(screen.orientation.angle);
+
+    // HighDPI補正なしの通常キャンバス設定
+    const nativeCanvas = $('#native');
+    const naiveContext = nativeCanvas[0].getContext('2d');
+    nativeCanvas.css('width', picWidth);
+    nativeCanvas.css('height', picHeight);
+
+    // HighDPIキャンバス（ダウンサンプリングによる品質向上）
+    const hiDpiCanvas = $('#hdpi')[0];
+    const hiDpiContext = hiDpiCanvas.getContext('2d');
+    if (window.devicePixelRatio) {
+      // ダウンサンプリングの品質をhighに設定
+      hiDpiContext.imageSmoothingQuality = 'high';
+      // 拡大前のキャンバスの幅を取得
+      const hiDpiCanvasWidth = picWidth;
+      // 拡大前のキャンバスの高さを取得
+      const hiDpiCanvasHeight = picHeight;
+      // -------------------------------------------------
+      // HighDPI環境用のダウンサンプリング設定
+      // -------------------------------------------------
+      const devicePixelRatio = (window.devicePixelRatio + 1);
+      // キャンバスの実際の幅、高さをデバイスピクセル比で物理的に拡大する。
+      // この設定により、以降のすべての描画操作が大きなサイズで行われるようになる。
+      $(hiDpiCanvas).attr('width', hiDpiCanvasWidth * devicePixelRatio);
+      $(hiDpiCanvas).attr('height', hiDpiCanvasHeight * devicePixelRatio);
+      // キャンバスの幅、高さを「CSS」で元のサイズに縮小する。
+      // 見た目はデバイスピクセル比による拡大前の元の大きさになるが、
+      // キャンバスへの描画は直前に設定したデバイスピクセル比で拡大したサイズをベースに描画される。
+      $(hiDpiCanvas).css('width', hiDpiCanvasWidth);
+      $(hiDpiCanvas).css('height', hiDpiCanvasHeight);
+      // キャンバスのコンテキストをデバイスピクセル比でサイズを拡大する。
+      // 属性のwidth、heightでデバイスピクセル比による実際のキャンバスサイズを拡大しているが、
+      // キャンバス内部の描画操作で元のサイズをベースに描画することがあるため
+      // 新しいサイズを考慮するようにスケールメソッドでデバイスピクセル比を正しく認識させる。
+      hiDpiContext.scale(devicePixelRatio, devicePixelRatio);
+    }
+  });
+  async function startCamera() {
+    const stream = await initCamera();
+    const video = document.getElementById('cardCaptureVideo');
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      video.play();
+    };
+  }
+  async function initCamera() {
+    let frontDeviceId;
+    let backDeviceId;
+    let frontLabel;
+    let backLabel;
+    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    try {
+      // 端末のデバイスID一覧を取得（front camera, back camera）
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      if (devices.length > 0) {
+        frontDeviceId = devices[0].deviceId;
+        backDeviceId = devices[0].deviceId;
+      }
+      // front, backカメラを検出
+      devices.forEach(device => {
+        if (device.kind === 'videoinput') {
+          if (device.label && device.label.length > 0) {
+            // 機種によってデバイスの名前が異なるかも？
+            // TODO: front, backの部分一致で取得できない可能性あり
+            if (device.label.toLowerCase().indexOf('back') >= 0) {
+              backDeviceId = device.deviceId;
+              backLabel = device.label;
+            } else if (device.label.toLowerCase().indexOf('front') >= 0) {
+              frontDeviceId = device.deviceId;
+              frontLabel = device.label;
+            }
+          }
+        }
+      });
+      $('#deviceIds').text(`front:${frontLabel}, back:${backLabel}`);
+    } catch (e) {
+      alert(e.toString());
+    }
+    try {
+      const tracks = tempStream.getTracks()
+      if (tracks) {
+        tracks.forEach(track => track.stop());
+      }
+      // 端末の縦向き、横向き判定
+      let orient = (screen.orientation.angle === 0 || screen.orientation.angle === 180) ?
+                    1 : 2;
+      // facingMode: { exact: "environment" }でbackカメラに切り替えれるとドキュメントに記載されているが
+      // 機種によって動作しない？Surface Duo2だとDeviceIdを指定しないと常にfrontカメラになる
+      let camWidth = 0;
+      let camHeight = 0;
+      if (orient === 1) {
+        camWidth = picHeight;
+        camHeight = picWidth;
+      } else {
+        camWidth = picWidth;
+        camHeight = picHeight;
+      }
+      const constraints = {
+        audio: false,
+        video: {
+          width: camWidth,
+          //"min-width": 920,
+          //"max-width": 920,
+          height: camHeight,
+          //"min-height": 1500,
+          //"max-height": 1500,
+          facingMode: { exact: "environment" }
+        },
+        deviceId: { exact: frontDeviceId }
+      };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      return stream;
+      /* ストリームを使用 */
+    } catch (err) {
+      console.log(err);
+      alert(err.toString());
+    }
+  }
+  /**
+   * 
+   */
+  function shot() {
+    try {
+      // video要素を取得
+      const video = document.getElementById('cardCaptureVideo');
+      // Nativeキャンバスを取得
+      const nativeCanvas = document.getElementById('native');
+      // HiDPIキャンバスを取得
+      const hiDpiCanvas = document.getElementById('hdpi');
+      // カメラの表示内容を描画
+      drawCameraImage(nativeCanvas, video);
+      drawHiDpiCameraImage(hiDpiCanvas, video);
+    } catch (e) {
+      alert(e.toString());
+    }
+  }
+  
+  function drawCameraImage(canvas, video) {
+    // キャンバスのコンテキストを取得
+    const context = canvas.getContext('2d');
+    // キャンバスにカメラの表示内容を描画
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
+  
+  function drawHiDpiCameraImage(canvas, video) {
+    // キャンバスのコンテキストを取得
+    const context = canvas.getContext('2d');
+    // キャンバスにカメラの表示内容を描画
+    context.drawImage(video, 0, 0);
+  }
+  
+  function saveNativeImage() {
+    // Nativeキャンバスを取得
+    const canvas = document.getElementById('native');
+    // jpeg(圧縮率90%)でダウンロード
+    const data = canvas.toDataURL("image/jpeg", 0.9);
+    const a = document.createElement("a");
+    a.href = data;
+    a.download = "native_image.jpg";
+    a.click();
+  }
+
+  function saveHiDPIImage() {
+    // Nativeキャンバスを取得
+    const canvas = document.getElementById('hdpi');
+    // jpeg(圧縮率90%)でダウンロード
+    const data = canvas.toDataURL("image/jpeg", 0.9);
+    const a = document.createElement("a");
+    a.href = data;
+    a.download = "hidpi_image.jpg";
+    a.click();
+  }
+
+  function saveHiDPIImage2() {
+    // Nativeキャンバスを取得
+    const canvas = document.getElementById('hdpi');
+    // jpeg(無圧縮)でダウンロード
+    const data = canvas.toDataURL("image/jpeg", 1.0);
+    const a = document.createElement("a");
+    a.href = data;
+    a.download = "hidpi_image.jpg";
+    a.click();
+  }
+
+  function saveImageCapture() {
+    const videoTrack = stream.getVideoTracks()[0];
+    // ImageCaptureオブジェクトを作成
+    const imageCapture = new ImageCapture(videoTrack);
+    // カメラから静止画を取得
+    imageCapture.takePhoto()
+      .then((blob) => {
+        // Blob形式の画像データを利用する (例: 画面に表示、サーバーに送信など)
+        const imageURL = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = imageURL;
+        a.download = "image_capture.jpg";
+        a.click();
+      })
+      .catch((error) => {
+        console.error('Error taking photo:', error);
+      });
+  }
+
+  function changeTrack() {
+    try {
+      const [track] = stream.getVideoTracks();
+      track.applyConstraints({
+        facingMode: {
+          exact: 'environment'
+        },
+        aspectRatio: { exact: 2.5 }
+      });
+    } catch (e) {
+      alert(e.toString());
+    }
+  }
+</script>
+
+</html>
