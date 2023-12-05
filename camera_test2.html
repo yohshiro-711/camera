@@ -1,0 +1,271 @@
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+    }
+    #camera_area {
+      width: 100%;
+      height: 100%;
+    }
+    #clip_overlay {
+      position: absolute;
+      background-color: rgba(0, 0, 0, 0.8);
+      inset: 0;
+      z-index: 99999;
+    }
+    #saveInfo {
+      position: absolute;
+      color: white;
+      right: 10px;
+      top: 20px;
+      z-index: 9999999;
+    }
+    #save4k {
+      position: absolute;
+      right: 10px;
+      top: 45px;
+      z-index: 9999999;
+      width: 70px;
+      height: 35px;
+    }
+    #saveFullHD {
+      position: absolute;
+      right: 10px;
+      top: 85px;
+      z-index: 9999999;
+      width: 70px;
+      height: 35px;
+    }
+  </style>
+
+</head>
+<body>
+
+  <video id="camera_area" playsinline onClick="saveWrap();"></video>
+  <div id="clip_overlay"></div>
+
+  <canvas id="hidpiCanvas" style="display: none;"></canvas>
+
+  <label id="saveInfo">カメラ解像度</label>
+  <button id="save4k" onClick="change4kMode();">4k</button>
+  <button id="saveFullHD" onClick="changeFullHDMode();">FullHD</button>
+
+</body>
+
+  <script type="text/javascript">
+    // カメラ撮影エリアのサイズ
+    const CAMERA_AREA_W = 450;
+    const CAMERA_AREA_H = 270;
+
+    // カメラの解像度オブジェクト
+    window.cameraRes = {
+      width: 3840,
+      height: 2160
+    };
+
+    function change4kMode() {
+      window.cameraRes.width = 3840;
+      window.cameraRes.height = 2160;
+      init();
+    }
+
+    function changeFullHDMode() {
+      window.cameraRes.width = 1920;
+      window.cameraRes.height = 1080;
+      init();
+    }
+
+    async function init() {
+      clipCameraArea();
+      const stream = await initCamera();
+      const video = document.getElementById('camera_area');
+      video.srcObject = stream;
+      video.onloadedmetadata = () => {
+        video.play();
+      };
+    }
+  
+    /**
+     * オーバーレイdivからカメラエリアのクリッピングを行う.
+     */
+    function clipCameraArea() {
+      // オーバーレイを取得
+      const clipOverlay = document.getElementById('clip_overlay');
+      // カメラの撮影領域を算出
+      const cameraSize = calcCameraBoxSize();
+      // オーバーレイエリアの中央四角形を切り抜くクリッピングパスを作成
+      const cameraPath = `M 0 0 v ${cameraSize.clientHeight} h ${cameraSize.clientWidth} v -${cameraSize.clientHeight} z`;
+      const overlayPath =  `M ${cameraSize.left} ${cameraSize.top}  h ${cameraSize.width} v ${cameraSize.height} h -${cameraSize.width} z`;
+      clipOverlay.style.clipPath = `path('${overlayPath} ${cameraPath}')`;
+    }
+
+    /**
+     * カメラの撮影領域算出.
+     */
+    function calcCameraBoxSize() {
+      const cameraArea = document.getElementById('camera_area');
+      return {
+        clientWidth: cameraArea.clientWidth,
+        clientHeight: cameraArea.clientHeight,
+        width: CAMERA_AREA_W,
+        height: CAMERA_AREA_H,
+        left: cameraArea.clientWidth / 2 - (CAMERA_AREA_W / 2),
+        top: cameraArea.clientHeight / 2 - (CAMERA_AREA_H / 2)
+      };
+    }
+
+    async function initCamera() {
+      let frontDeviceId;
+      let backDeviceId;
+      let frontLabel;
+      let backLabel;
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      try {
+        // 端末のデバイスID一覧を取得（front camera, back camera）
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        if (devices.length > 0) {
+          frontDeviceId = devices[0].deviceId;
+          backDeviceId = devices[0].deviceId;
+        }
+        // front, backカメラを検出
+        devices.forEach(device => {
+          if (device.kind === 'videoinput') {
+            if (device.label && device.label.length > 0) {
+              // 機種によってデバイスの名前が異なるかも？
+              // TODO: front, backの部分一致で取得できない可能性あり
+              if (device.label.toLowerCase().indexOf('back') >= 0) {
+                backDeviceId = device.deviceId;
+                backLabel = device.label;
+              } else if (device.label.toLowerCase().indexOf('front') >= 0) {
+                frontDeviceId = device.deviceId;
+                frontLabel = device.label;
+              }
+            }
+          }
+        });
+      } catch (e) {
+        alert(e.toString());
+      }
+      try {
+        const tracks = tempStream.getTracks()
+        if (tracks) {
+          tracks.forEach(track => track.stop());
+        }
+        // Video要素のサイズを取得
+        const video = document.getElementById('camera_area');
+        // 端末の縦向き、横向き判定
+        let orient = (screen.orientation.angle === 0 || screen.orientation.angle === 180) ?
+                      1 : 2;
+        // facingMode: { exact: "environment" }でbackカメラに切り替えれるとドキュメントに記載されているが
+        // 機種によって動作しない？Surface Duo2だとDeviceIdを指定しないと常にfrontカメラになる
+        let camWidth = 0;
+        let camHeight = 0;
+        if (orient === 1) {
+          camWidth = cameraRes.height;
+          camHeight = cameraRes.width;
+        } else {
+          camWidth = cameraRes.width;
+          camHeight = cameraRes.height;
+        }
+        const constraints = {
+          audio: false,
+          video: {
+            width: camWidth,
+            //"min-width": 920,
+            //"max-width": 920,
+            height: camHeight,
+            //"min-height": 1500,
+            //"max-height": 1500,
+            facingMode: { exact: "environment" },
+            frameRate: { ideal: 60, min: 30, max: 60}
+          },
+          deviceId: { exact: frontDeviceId }
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        return stream;
+        /* ストリームを使用 */
+      } catch (err) {
+        console.log(err);
+        alert(err.toString());
+      }
+    }
+
+    function setupHiDpiCanvas() {
+      // キャンバスを取得
+      const canvas = document.getElementById('hidpiCanvas');
+      const context = canvas.getContext('2d');
+      // 端末のスクリーンサイズとカメラの解像度の比率を算出
+      const wScale = window.cameraRes.width / window.innerWidth;
+      const hScale = window.cameraRes.height / window.innerHeight;
+      // カメラの幅を取得
+      const cameraAreaWidth = CAMERA_AREA_W * wScale;
+      // カメラの高さを取得
+      const cameraAreaHeight = CAMERA_AREA_H * hScale;
+      // -------------------------------------------------
+      // HighDPI環境用のダウンサンプリング設定
+      // -------------------------------------------------
+      // キャンバスの実際の幅、高さをデバイスピクセル比で物理的に拡大する。
+      // この設定により、以降のすべての描画操作が大きなサイズで行われるようになる。
+      canvas.width = cameraAreaWidth * window.devicePixelRatio;
+      canvas.height = cameraAreaHeight * window.devicePixelRatio;
+      // キャンバスの幅、高さを「CSS」で元のサイズに縮小する。
+      // 見た目はデバイスピクセル比による拡大前の元の大きさになるが、
+      // キャンバスへの描画は直前に設定したデバイスピクセル比で拡大したサイズをベースに描画される。
+      canvas.style.width = cameraAreaWidth + 'px';
+      canvas.style.height = cameraAreaHeight + 'px';
+      // キャンバスのコンテキストをデバイスピクセル比でサイズを拡大する。
+      // 属性のwidth、heightでデバイスピクセル比による実際のキャンバスサイズを拡大しているが、
+      // キャンバス内部の描画操作で元のサイズをベースに描画することがあるため
+      // 新しいサイズを考慮するようにスケールメソッドでデバイスピクセル比を正しく認識させる。
+      context.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+
+    function saveWrap() {
+      try {
+        saveBizCard();
+      } catch (e) {
+        alert(e);
+      }
+    }
+
+    function saveBizCard() {
+      // video要素を取得
+      const video = document.getElementById('camera_area');
+      // streamを取得
+      const stream = video.srcObject;
+      if (!stream) {
+        alert('カメラが起動していません。');
+        return;
+      }
+      // キャンバスをカメラの解像度に合わせて高DPI設定を実行
+      setupHiDpiCanvas();
+      // カメラの撮影領域を算出
+      const cameraSize = calcCameraBoxSize();
+      // キャンバスを取得
+      const canvas = document.getElementById('hidpiCanvas');
+      // キャンバスのコンテキストを取得
+      const context = canvas.getContext('2d');
+      // 端末のスクリーンサイズとカメラの解像度の比率を算出
+      const wScale = window.cameraRes.width / window.innerWidth;
+      const hScale = window.cameraRes.height / window.innerHeight;
+      // キャンバスにカメラの表示内容を描画
+      const sx = cameraSize.left * wScale;
+      const sy = cameraSize.top * hScale;
+      const sw = cameraSize.width * wScale;
+      const sh = cameraSize.height * hScale;
+      context.drawImage(video, sx, sy, sw, sh, 0, 0, cameraSize.width * wScale, cameraSize.height * hScale);
+      // jpeg(圧縮率90%)でダウンロード
+      const data = canvas.toDataURL("image/jpeg", 0.9);
+      const a = document.createElement("a");
+      a.href = data;
+      a.download = "biz_card.jpg";
+      a.click();
+    }
+
+  </script>
+
+</html>
