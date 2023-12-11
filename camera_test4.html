@@ -1,0 +1,532 @@
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="/opencv.js"></script>
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      overflow-x: hidden;
+    }
+    #camera_area {
+      width: 100%;
+      height: 100%;
+    }
+    #contourCanvas {
+      position: absolute;
+      background-color: transparent;
+      inset: 0;
+      z-index: 9999;
+    }
+    #clip_overlay {
+      position: absolute;
+      background-color: rgba(31, 42, 166, 0.8);
+      inset: 0;
+      z-index: 99999;
+    }
+    #saveInfo {
+      position: absolute;
+      color: white;
+      right: 10px;
+      top: 20px;
+      z-index: 9999999;
+    }
+    #saveFullHD {
+      position: absolute;
+      right: 10px;
+      top: 15px;
+      z-index: 9999999;
+      width: 90px;
+      height: 35px;
+    }
+    .toggle-button-002 {
+      display: inline-block;
+      position: absolute;
+      width: 100px;
+      height: 50px;
+      top: 60px;
+      right: 10px;
+      border-radius: 50px;
+      border: 3px solid #dddddd;
+      box-sizing: content-box;
+      cursor: pointer;
+      transition: border-color .4s;
+      z-index: 9999999;
+    }
+
+    .toggle-button-002:has(:checked) {
+      border-color: #4bd865;
+    }
+
+    .toggle-button-002::after {
+      position: absolute;
+      top: 50%;
+      left: 5px;
+      transform: translateY(-50%);
+      width: 45px;
+      height: 45px;
+      border-radius: 50%;
+      background-color: #dddddd;
+      content: '';
+      transition: left .4s;
+    }
+
+    .toggle-button-002:has(:checked)::after {
+      left: 50px;
+      background-color: #4bd865;
+    }
+
+    .toggle-button-002 input {
+      display: none;
+    }
+  </style>
+
+</head>
+<body>
+
+  <video id="camera_area" playsinline onClick="saveWrap();"></video>
+  <div id="clip_overlay"></div>
+
+  <canvas id="hidpiCanvas" style="display: none;"></canvas>
+  <canvas id="contourCanvas" onClick="saveWrap();"></canvas>
+  <button id="saveFullHD" onClick="changeFullHDMode();">カメラ起動</button>
+
+  <label class="toggle-button-002">
+    <input id="trimEnabled" type="checkbox"/>
+  </label>
+
+  <audio id="btn_audio">
+    <source src="camera.mp3" type="audio/mp3">
+  </audio>
+</body>
+
+  <script type="text/javascript">
+
+    window.reverseResolution = false;
+
+    // 一般的な名刺のピクセルサイズ
+    const BIZ_CARD_W = 1254;
+    const BIZ_CARD_H = 758;
+    // 名刺サイズのアスペクト比
+    const BIZ_CARD_ASPECT_RATE = BIZ_CARD_W / BIZ_CARD_H;
+
+    // カメラ撮影エリアのサイズ
+    const CAMERA_LENS_W = 400;
+    const CAMERA_LENS_H = 240;
+
+    const DIRECTION_V = 1;
+    const DIRECTION_H = 2;
+
+    const THRESHOLD = 170;
+
+    // 現在の端末向き
+    window.currentDirection = 0;
+
+    window.addEventListener("load", (event) => {
+      window.reverseResolution = needReverseResolution();
+      // 端末の向きを取得
+      window.currentDirection = getScreenDirection();
+      // video要素を取得
+      const video = document.getElementById('camera_area');
+      video.onloadedmetadata = () => {
+        video.play();
+      };
+    });
+
+    /**
+     * resizeイベントで画面の向きに変化があったか検知する.
+     */
+    window.addEventListener("resize", () => {
+      window.reverseResolution = needReverseResolution();
+      // 端末の向きを取得
+      const direction = getScreenDirection();
+      // 向きの変化があればカメラを再セットアップを行うか判定
+      const changed = (direction !== window.currentDirection);
+      // 端末向きを保存
+      window.currentDirection = direction;
+      if (changed) {
+        // video要素を取得
+        const video = document.getElementById('camera_area');
+        // videoが再生中の場合、videoを再セットアップ
+        if (!video.paused) {
+          // 変化した向きに合わせてカメラを再セットアップ
+          initVideo();
+        }
+      }
+    });
+
+    function changeFullHDMode() {
+      try {
+        initVideo();
+      } catch (e) {
+        alert(e);
+      }
+    }
+
+    function needReverseResolution() {
+      // 端末の向きを取得
+      const direction = getScreenDirection();
+      // 端末の向きで幅と高さが逆転しているか判定
+      return (direction === DIRECTION_V && window.innerWidth > window.innerHeight) ||
+              (direction === DIRECTION_H && window.innerHeight > window.innerWidth);
+    }
+
+    async function initVideo() {
+      // カメラのレンズエリアを作成
+      clipCameraLens();
+      // キャンバスを取得
+      const hidpiCanvas = document.getElementById('hidpiCanvas');
+      const contourCanvas = document.getElementById('contourCanvas');
+      // キャンバスのHiDPI化
+      setupHiDpiCanvas(hidpiCanvas);
+      //setupHiDpiCanvas(contourCanvas);
+      // カメラのセットアップを実行
+      await setupCamera();
+    }
+  
+    /**
+     * オーバーレイdivに対してレンズエリアのクリッピングを行う.
+     */
+    function clipCameraLens() {
+      // オーバーレイを取得
+      const clipOverlay = document.getElementById('clip_overlay');
+      // カメラ領域を算出
+      const cameraInfo = calcCameraAreaSize();
+      // オーバーレイエリアの中央四角形(レンズ)を切り抜くクリッピングパスを作成
+      const cameraPath = `M 0 0 v ${cameraInfo.videoHeight} h ${cameraInfo.videoWidth} v -${cameraInfo.videoHeight} z`;
+      const overlayPath =  `M ${cameraInfo.lensLeft} ${cameraInfo.lensTop}  h ${cameraInfo.lensWidth} v ${cameraInfo.lensHeight} h -${cameraInfo.lensWidth} z`;
+      clipOverlay.style.clipPath = `path('${overlayPath} ${cameraPath}')`;
+    }
+
+    /**
+     * カメラ全体の領域算出.
+     */
+    function calcCameraAreaSize() {
+      // video要素を取得
+      // ※要素のwidth、heightは画面から見たままの通り取得される（逆転しない）
+      const video = document.getElementById('camera_area');
+      // オーバーレイを取得
+      const clipOverlay = document.getElementById('clip_overlay');
+      // 端末の向きを取得
+      const direction = getScreenDirection();
+      let size = {
+        clientWidth: direction === DIRECTION_V ? video.clientHeight : video.clientWidth,
+        clientHeight: direction === DIRECTION_V ? video.clientWidth : video.clientHeight,
+        videoWidth: video.clientWidth,
+        videoHeight: video.clientHeight
+      };
+      size.cameraResolutionWidth = size.clientWidth * 3;
+      size.cameraResolutionHeight = size.clientHeight * 3;
+      const checkBox = document.getElementById('trimEnabled');
+      // 画面のアスペクト比を算出
+      const screenAspectRate = window.innerWidth / window.innerHeight;
+      // 端末の画面アスペクト比に合わせてレンズエリア（名刺サイズ）をスケーリング
+      if (screenAspectRate > BIZ_CARD_ASPECT_RATE) {
+        size.lensWidth = (window.innerHeight - 30) * BIZ_CARD_ASPECT_RATE;
+        size.lensHeight = window.innerHeight - 30;
+      } else {
+        size.lensWidth = window.innerWidth;
+        size.lensHeight = (window.innerWidth / BIZ_CARD_ASPECT_RATE);
+      }
+      // レンズの表示位置を算出
+      size.lensLeft = (video.clientWidth / 2) - (size.lensWidth / 2);
+      size.lensTop = (video.clientHeight / 2) - (size.lensHeight / 2);
+      return size;
+    }
+
+    /**
+     * カメラのセットアップを実行.
+     */
+    async function setupCamera() {
+      let frontDeviceId;
+      let backDeviceId;
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      try {
+        // 端末のデバイスID一覧を取得（front camera, back camera）
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        if (devices.length > 0) {
+          frontDeviceId = devices[0].deviceId;
+          backDeviceId = devices[0].deviceId;
+        }
+        // front, backカメラを検出
+        devices.forEach(device => {
+          if (device.kind === 'videoinput') {
+            if (device.label && device.label.length > 0) {
+              // 機種によってデバイスの名前が異なるかも？
+              // TODO: front, backの部分一致で取得できない可能性あり
+              if (device.label.toLowerCase().indexOf('back') >= 0) {
+                backDeviceId = device.deviceId;
+              } else if (device.label.toLowerCase().indexOf('front') >= 0) {
+                frontDeviceId = device.deviceId;
+              }
+            }
+          }
+        });
+      } catch (e) {
+        alert(e.toString());
+      }
+      try {
+        const tracks = tempStream.getTracks()
+        if (tracks) {
+          tracks.forEach(track => track.stop());
+        }
+        // Video要素のサイズを取得
+        const video = document.getElementById('camera_area');
+        // 端末の縦向き、横向き判定
+        const angle = getScreenAngle();
+        // カメラ領域を算出
+        const cameraInfo = calcCameraAreaSize();
+        // facingMode: { exact: "environment" }でbackカメラに切り替えれるとドキュメントに記載されているが
+        // 機種によって動作しない？Surface Duo2だとDeviceIdを指定しないと常にfrontカメラになる
+        const constraints = {
+          audio: false,
+          video: {
+            width: cameraInfo.cameraResolutionWidth,
+            height: cameraInfo.cameraResolutionHeight,
+            facingMode: { exact: "environment" },
+            frameRate: { ideal: 60, min: 30, max: 60}
+          },
+          deviceId: { exact: frontDeviceId }
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // video要素にストリームを設定してカメラの投影を開始
+        video.srcObject = stream;
+      } catch (err) {
+        console.log(err);
+        alert(err.toString());
+      }
+    }
+
+    /**
+     * キャンバスのHighDPIセットアップ.
+     */
+    function setupHiDpiCanvas(canvas) {
+      // カメラ領域を算出
+      const cameraInfo = calcCameraAreaSize();
+      // キャンバスを取得
+      //const canvas = document.getElementById('hidpiCanvas');
+      // キャンバスのコンテキストを取得
+      const context = canvas.getContext('2d');
+      // 端末のスクリーンサイズとカメラの解像度の比率を算出
+      const wScale = cameraInfo.cameraResolutionWidth / cameraInfo.clientWidth;
+      const hScale = cameraInfo.cameraResolutionHeight / cameraInfo.clientHeight;
+      // カメラのレンズ幅を算出
+      const clipLensWidth = cameraInfo.lensWidth * wScale;
+      // カメラのレンズ高さを算出
+      const clipLensHeight = cameraInfo.lensHeight * hScale;
+      // -------------------------------------------------
+      // HighDPI環境用のダウンサンプリング設定
+      // -------------------------------------------------
+      // キャンバスの実際の幅、高さをデバイスピクセル比で物理的に拡大する。
+      // この設定により、以降のすべての描画操作が大きなサイズで行われるようになる。
+      canvas.width = clipLensWidth * (window.devicePixelRatio);
+      canvas.height = clipLensHeight * (window.devicePixelRatio);
+      // キャンバスの幅、高さを「CSS」で元のサイズに縮小する。
+      // 見た目はデバイスピクセル比による拡大前の元の大きさになるが、
+      // キャンバスへの描画は直前に設定したデバイスピクセル比で拡大したサイズをベースに描画される。
+      canvas.style.width = clipLensWidth + 'px';
+      canvas.style.height = clipLensHeight + 'px';
+      // キャンバスのコンテキストをデバイスピクセル比でサイズを拡大する。
+      // 属性のwidth、heightでデバイスピクセル比による実際のキャンバスサイズを拡大しているが、
+      // キャンバス内部の描画操作で元のサイズをベースに描画することがあるため
+      // 新しいサイズを考慮するようにスケールメソッドでデバイスピクセル比を正しく認識させる。
+      context.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+
+    function saveWrap() {
+      try {
+        const audio = document.getElementById('btn_audio');
+        audio.currentTime = 0;
+        audio.play();
+        saveBizCard();
+      } catch (e) {
+        alert(e);
+      }
+    }
+
+    /**
+     * 保存
+     */
+    function saveBizCard() {
+      // video要素を取得
+      const video = document.getElementById('camera_area');
+      // streamを取得
+      const stream = video.srcObject;
+      if (!stream) {
+        alert('カメラが起動していません。');
+        return;
+      }
+      // カメラ領域を算出
+      const cameraInfo = calcCameraAreaSize();
+      // キャンバスをカメラの解像度に合わせて高DPI設定を実行
+      //setupHiDpiCanvas(cameraInfo);
+      // キャンバスを取得
+      const canvas = document.getElementById('hidpiCanvas');
+      // キャンバスのコンテキストを取得
+      const context = canvas.getContext('2d');
+      // キャンバスをカメラの解像度に合わせて高DPI設定を実行
+      setupHiDpiCanvas(canvas);
+      // キャンバスをクリア
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      // 端末のスクリーンサイズとカメラの解像度の比率を算出
+      const wScale = cameraInfo.cameraResolutionWidth / cameraInfo.clientWidth;
+      const hScale = cameraInfo.cameraResolutionHeight / cameraInfo.clientHeight;
+      // キャンバスにカメラの表示内容を描画
+      const sx = cameraInfo.lensLeft * wScale;
+      const sy = cameraInfo.lensTop * hScale;
+      const sw = cameraInfo.lensWidth * wScale;
+      const sh = cameraInfo.lensHeight * hScale;
+      context.drawImage(video, sx, sy, sw, sh, 0, 0, cameraInfo.lensWidth * wScale, cameraInfo.lensHeight * hScale);
+      try {
+        const checkBox = document.getElementById('trimEnabled');
+        if (checkBox.checked) {
+          transform();
+        }
+      } catch (e) {
+        alert("error: " + e.toString());
+      }
+      // jpeg(圧縮率90%)でダウンロード
+      const data = canvas.toDataURL("image/jpeg", 0.9);
+      const a = document.createElement("a");
+      a.href = data;
+      a.download = "biz_card.jpg";
+      a.click();
+    }
+
+    /**
+     * 画面の向きを取得.
+     * @return 画面向き（0:縦、180:縦反対、90:横、-90(270):横反対）
+     */
+    function getScreenAngle() {
+      // safariを考慮して画面の向きを取得
+      return (window.orientation || window.screen.orientation.angle);
+    }
+
+    function getScreenDirection() {
+      const angle = getScreenAngle();
+      if (angle === 0 || angle === 180) {
+        return 1;
+      } else if (angle === 90 || angle === -90 || angle == 270) {
+        return 2;
+      } else {
+        throw Error('Unknown Screen Angle: ' + angle);
+      }
+    }
+
+    function transform() {
+      const imageElement = document.querySelector('#transformImage');
+      const im = cv.imread('hidpiCanvas');
+      const fromPts = getContoursPoints(im);
+      if (fromPts) {
+        transformImage(im, fromPts);
+      }
+      im.delete();
+    }
+
+    function getContoursPoints(im) {
+      // グレースケール処理
+      let im_gray = new cv.Mat();
+      cv.cvtColor(im, im_gray, cv.COLOR_RGBA2GRAY);
+      // 2値化処理
+      let threshold_im = new cv.Mat();
+      cv.threshold(im_gray, threshold_im, THRESHOLD, 255, cv.THRESH_BINARY);
+      // キャンバスに描画されている名刺の輪郭を取得
+      // ※この輪郭取得では、名刺エリア内にある様々な形状が取得される
+      let contours = new cv.MatVector();
+      let hierarchy = new cv.Mat();
+      cv.findContours(threshold_im, contours, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
+      hierarchy.delete();
+      // 名刺エリアの特定用オブジェクト
+      let target = {
+        areaSize: 0,
+        contour: null
+      };
+      // 名刺の外枠を特定する
+      for (let i = 0; i < contours.size(); i++) {
+        let contour = contours.get(i);
+        // 輪郭の面積を算出
+        const areaSize = cv.contourArea(contour);
+        // 面積が最も大きい輪郭を特定する
+        if (target.areaSize <= areaSize) {
+          target.areaSize = areaSize;
+          target.contour = contour;
+        }
+      }
+      contours.delete();
+      im_gray.delete();
+      threshold_im.delete();
+      // 輪郭から頂点座標を算出する
+      let approx = new cv.Mat();
+      // 輪郭の周囲の長さを算出
+      const epsilon = 0.05 * cv.arcLength(target.contour, true);
+      // 輪郭のポリゴンを近似し、四角形になるようにする
+      // ※epsilonの割合により近似の粒度が変わる。epsilonが小さすぎると四角形にならない（頂点が5個以上になる）
+      cv.approxPolyDP(target.contour, approx, epsilon, true);
+      approx.convertTo(approx, cv.CV_32FC2);
+      alert(`width: ${approx.size().width}, height: ${approx.size().height}`);
+      // approxPolyDPで近似すると、頂点の開始位置が不定になるため
+      // 左上を起点とするように調整する。
+      const vertices = [
+        { x: approx.data32F[0], y: approx.data32F[1] },
+        { x: approx.data32F[2], y: approx.data32F[3] },
+        { x: approx.data32F[4], y: approx.data32F[5] },
+        { x: approx.data32F[6], y: approx.data32F[7] }
+      ];
+      approx.delete();
+      // 左上→右上→右下→左下になるように頂点をソートする
+      const newList = sortVertices(vertices);
+      // 頂点の起点を調整したMatを作成
+      const fromPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        newList[0].x, newList[0].y,
+        newList[1].x, newList[1].y,
+        newList[2].x, newList[2].y,
+        newList[3].x, newList[3].y
+      ]);
+      return fromPts;
+    }
+
+    function transformImage(im, fromPts) {
+      const rows = im.rows;
+      const cols = im.cols;
+      let dsize = new cv.Size(cols, rows);
+      // 透視投影変換用の2D座標生成（左上→右上→右下→左下）
+      const toPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        0, 0, cols, 0, cols, rows, 0, rows
+      ]);
+      //let d1 = [];
+      //d1.push('------------------------------');
+      //d1.push(fromPts.data32F.join(','));
+      //d1.push(toPts.data32F.join(','));
+      //alert(d1.join('\n'));
+      // 透視投影変換の変換行列を計算
+      const matrix = cv.findHomography(fromPts, toPts);
+      // 透視投影変換を実行
+      let transformedIm = new cv.Mat();
+      cv.warpPerspective(im, transformedIm, matrix, dsize, cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar());
+      fromPts.delete();
+      toPts.delete();
+      cv.imshow('hidpiCanvas', transformedIm);
+      transformedIm.delete();
+    }
+
+    function sortVertices(vertices) {
+      let result = [];
+      // y軸で昇順ソートし、左上、右上の頂点を特定
+      vertices.sort((a, b) => a.y - b.y);
+      result.push(vertices[0]);
+      result.push(vertices[1]);
+      result.sort((a, b) => a.x - b.x);
+      // 並びが確定した先頭2件を削除
+      vertices.shift();
+      vertices.shift();
+      // 右下、左下の頂点を特定（残りの2件は右下or左下になるためx軸でソート）
+      vertices.sort((a, b) => b.x - a.x);
+      result.push(vertices[0]);
+      result.push(vertices[1]);
+      return result;
+    }
+
+  </script>
+
+</html>
