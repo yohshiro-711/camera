@@ -90,8 +90,8 @@
       display: none;
     }
 
-    /* ローディング画面 */
-    #loading {
+    /* 処理中表示 */
+    #processing {
       position: absolute;
       width: 100vw;
       height: 100vh;
@@ -124,8 +124,8 @@
 </head>
 <body>
 
-  <!-- ローディング画面 -->
-  <div id="loading">
+  <!-- 処理中表示 -->
+  <div id="processing">
     <div class="spinner"></div>
   </div>
 
@@ -136,8 +136,7 @@
     <div id="clip_overlay"></div>
 
     <canvas id="hidpiCanvas" style="display: none;"></canvas>
-    <canvas id="contourCanvas" onClick="saveWrap();"></canvas>
-    <button id="saveFullHD" onClick="changeFullHDMode();">カメラ起動</button>
+    <button id="saveFullHD" onClick="BizCard.startCamera();">カメラ起動</button>
 
     <label class="toggle-button-002">
       <input id="trimEnabled" type="checkbox" checked="true"/>
@@ -180,7 +179,7 @@
 
     window.addEventListener("load", (event) => {
       // 端末の向きを取得
-      BizCard.currentDirection = getScreenDirection();
+      BizCard.currentDirection = BizCard.getScreenDirection();
       // video要素の初期化
       BizCard.video.onloadedmetadata = () => {
         BizCard.video.play();
@@ -192,7 +191,7 @@
      */
     window.addEventListener("resize", () => {
       // 端末の向きを取得
-      const direction = getScreenDirection();
+      const direction = BizCard.getScreenDirection();
       // 向きの変化があればカメラを再セットアップを行うか判定
       const changed = (direction !== BizCard.currentDirection);
       // 端末向きを保存
@@ -206,7 +205,7 @@
       }
     });
 
-    function changeFullHDMode() {
+    BizCard.startCamera = function () {
       try {
         initVideo();
       } catch (e) {
@@ -222,19 +221,19 @@
       // 射影変換の可否判定ループ
       BizCard.transformCheckRequestId = requestAnimationFrame(transformCheck);
       // カメラのレンズエリアを作成
-      clipCameraLens();
+      BizCard.clipCameraLens();
       // キャンバスのHiDPI化
-      setupHiDpiCanvas(BizCard.hiDPICanvas);
+      BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
       // カメラのセットアップを実行
-      await setupCamera();
+      await BizCard.setupCamera();
     }
   
     /**
      * オーバーレイdivに対してレンズエリアのクリッピングを行う.
      */
-    function clipCameraLens() {
+    BizCard.clipCameraLens = function() {
       // カメラ領域を算出
-      const cameraInfo = calcCameraAreaSize();
+      const cameraInfo = BizCard.calcCameraAreaSize();
       // オーバーレイエリアの中央四角形(レンズ)を切り抜くクリッピングパスを作成
       const cameraPath = `M 0 0 v ${cameraInfo.videoHeight} h ${cameraInfo.videoWidth} v -${cameraInfo.videoHeight} z`;
       const overlayPath =  `M ${cameraInfo.lensLeft} ${cameraInfo.lensTop}  h ${cameraInfo.lensWidth} v ${cameraInfo.lensHeight} h -${cameraInfo.lensWidth} z`;
@@ -244,10 +243,10 @@
     /**
      * カメラ全体の領域算出.
      */
-    function calcCameraAreaSize() {
+    BizCard.calcCameraAreaSize = function() {
       // ※要素のwidth、heightは画面から見たままの通り取得される（逆転しない）
       // 端末の向きを取得
-      const direction = getScreenDirection();
+      const direction = BizCard.getScreenDirection();
       let size = {
         clientWidth: direction === BizCard.DIRECTION_V ? BizCard.video.clientHeight : BizCard.video.clientWidth,
         clientHeight: direction === BizCard.DIRECTION_V ? BizCard.video.clientWidth : BizCard.video.clientHeight,
@@ -276,68 +275,40 @@
     /**
      * カメラのセットアップを実行.
      */
-    async function setupCamera() {
+    BizCard.setupCamera = async function() {
       try {
         // カメラ領域を算出
-        const cameraInfo = calcCameraAreaSize();
+        const cameraInfo = BizCard.calcCameraAreaSize();
         const constraints = {
           audio: false,
           video: {
             width: cameraInfo.cameraResolutionWidth,
             height: cameraInfo.cameraResolutionHeight,
-            facingMode: { exact: "environment" },
-            frameRate: { ideal: 60, min: 30, max: 60}
+            facingMode: { exact: "environment" }
           }
         };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        // video要素にストリームを設定してカメラの投影を開始
-        BizCard.video.srcObject = stream;
+        if (!BizCard.video.srcObject) {
+          // カメラをVideo要素で再生
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          // video要素にストリームを設定してカメラの投影を開始
+          BizCard.video.srcObject = stream;
+        } else {
+          // 既に再生中の場合はメディア設定の変更を適用（端末回転時の解像度変更）
+          BizCard.video.srcObject.getTracks().forEach(track => {
+            track.applyConstraints(constraints.video);
+          });
+        }
       } catch (err) {
         alert(err.toString());
       }
     }
 
     /**
-     * フロントカメラのデバイスIDを取得する.
-     */
-     async function getFrontDeviceId() {
-      let frontDeviceId;
-      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      try {
-        // 端末のデバイスID一覧を取得（front camera, back camera）
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        if (devices.length > 0) {
-          frontDeviceId = devices[0].deviceId;
-        }
-        // front, backカメラを検出
-        devices.forEach(device => {
-          if (device.kind === 'videoinput') {
-            if (device.label && device.label.length > 0) {
-              // 機種によってデバイスの名前が異なるかも？
-              // TODO: front, backの部分一致で取得できない可能性あり
-              if (device.label.toLowerCase().indexOf('front') >= 0) {
-                frontDeviceId = device.deviceId;
-              }
-            }
-          }
-        });
-      } catch (e) {
-        alert(e.toString());
-      } finally {
-        const tracks = tempStream.getTracks()
-        if (tracks) {
-          tracks.forEach(track => track.stop());
-        }
-      }
-      return frontDeviceId;
-    }
-
-    /**
      * キャンバスのHighDPIセットアップ.
      */
-    function setupHiDpiCanvas(canvas) {
+    BizCard.setupHiDpiCanvas = function(canvas) {
       // カメラ領域を算出
-      const cameraInfo = calcCameraAreaSize();
+      const cameraInfo = BizCard.calcCameraAreaSize();
       // キャンバスのコンテキストを取得
       const context = canvas.getContext('2d');
       // 端末のスクリーンサイズとカメラの解像度の比率を算出
@@ -368,7 +339,7 @@
 
     function saveWrap() {
       try {
-        loading(true);
+        BizCard.processing(true);
         const audio = document.getElementById('btn_audio');
         audio.currentTime = 0;
         audio.play();
@@ -387,7 +358,7 @@
       // キャンバスのコンテキストを取得
       const context = BizCard.hiDPICanvas.getContext('2d');
       // カメラ領域を算出
-      const cameraInfo = calcCameraAreaSize();
+      const cameraInfo = BizCard.calcCameraAreaSize();
       // キャンバスをクリア
       context.clearRect(0, 0, BizCard.hiDPICanvas.width, BizCard.hiDPICanvas.height);
       // 端末のスクリーンサイズとカメラの解像度の比率を算出
@@ -428,24 +399,16 @@
       a.href = data;
       a.download = "biz_card.jpg";
       a.click();
-      setupHiDpiCanvas(BizCard.hiDPICanvas);
-      loading(false);
-    }
-
-    /**
-     * 画面の向きを取得.
-     * @return 画面向き（0:縦、180:縦反対、90:横、-90(270):横反対）
-     */
-    function getScreenAngle() {
-      // safariを考慮して画面の向きを取得
-      return (window.orientation || window.screen.orientation.angle);
+      // 処理中画面を非表示
+      BizCard.processing(false);
+      BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
     }
 
     /**
      * 端末の向きを取得。
      */
-    function getScreenDirection() {
-      const angle = getScreenAngle();
+    BizCard.getScreenDirection = function() {
+      const angle = (window.orientation || window.screen.orientation.angle);
       if (angle === 0 || angle === 180) {
         return BizCard.DIRECTION_V;
       } else if (angle === 90 || angle === -90 || angle == 270) {
@@ -459,34 +422,35 @@
      * カメラ撮影領域の射影変換処理。
      */
     function transform() {
-      const im = cv.imread(BizCard.hiDPICanvas);
+      // レンズエリアを
+      const lensIm = cv.imread(BizCard.hiDPICanvas);
       try {
         // カメラ撮影領域内にある名刺の輪郭を取得
-        const fromPts = getBizCardContoursPoints(im);
-        if (fromPts) {
+        const fromMat = getBizCardContoursPoints(lensIm);
+        if (fromMat) {
           // 輪郭が取得できていれば射影変換を実行
-          transformBizCard(im, fromPts);
+          transformBizCard(lensIm, fromMat);
         }
       } finally {
-        im.delete();
+        lensIm.delete();
       }
     }
 
     /**
      * 名刺輪郭の座標情報を取得します。
      */
-    function getBizCardContoursPoints(im) {
+    function getBizCardContoursPoints(lensIm) {
       // グレースケール処理
-      let im_gray = new cv.Mat();
-      cv.cvtColor(im, im_gray, cv.COLOR_RGBA2GRAY);
+      const im_gray = new cv.Mat();
+      cv.cvtColor(lensIm, im_gray, cv.COLOR_RGBA2GRAY);
       // 2値化処理（白／黒化）
-      let threshold_im = new cv.Mat();
+      const threshold_im = new cv.Mat();
       cv.threshold(im_gray, threshold_im, BizCard.THRESHOLD, 255, cv.THRESH_BINARY);
       // キャンバスに描画されている名刺の輪郭を取得
-      // ※この輪郭取得では、名刺エリア内にある様々な形状が取得される
-      let contours = new cv.MatVector();
-      let hierarchy = new cv.Mat();
-      cv.findContours(threshold_im, contours, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
+      // ※この輪郭取得では、レンズエリア内にある様々な形状が取得される
+      const contours = new cv.MatVector();
+      const hierarchy = new cv.Mat();
+      cv.findContours(threshold_im, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
       // 名刺エリアの特定用オブジェクト
       let target = {
         areaSize: 0,
@@ -507,6 +471,10 @@
       hierarchy.delete();
       im_gray.delete();
       threshold_im.delete();
+      // 名刺の輪郭を特定出来なかった場合は処理を中断
+      if (!target.contour) {
+        return null;
+      }
       // 輪郭から頂点座標を算出する
       let approx = new cv.Mat();
       // 輪郭の周囲の長さを算出
@@ -515,8 +483,7 @@
       // ※epsilonの割合により近似の粒度が変わる。epsilonが小さすぎると四角形にならない（頂点が5個以上になる）
       cv.approxPolyDP(target.contour, approx, epsilon, true);
       approx.convertTo(approx, cv.CV_32FC2);
-      //alert(`width: ${approx.size().width}, height: ${approx.size().height}`);
-      // approxPolyDPで近似すると、頂点の開始位置が不定になるため
+      // approxPolyDPで近似化すると、頂点の開始位置が不定になるため
       // 左上を起点とするように調整する。
       const vertices = [
         { x: approx.data32F[0], y: approx.data32F[1] },
@@ -528,32 +495,36 @@
       // 左上→右上→右下→左下になるように頂点をソートする
       const newList = sortVertices(vertices);
       // 頂点の起点を調整したMatを作成
-      const fromPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      const fromMat = cv.matFromArray(4, 1, cv.CV_32FC2, [
         newList[0].x, newList[0].y,
         newList[1].x, newList[1].y,
         newList[2].x, newList[2].y,
         newList[3].x, newList[3].y
       ]);
-      return fromPts;
+      return fromMat;
     }
 
-    function transformBizCard(im, fromPts) {
-      const rows = im.rows;
-      const cols = im.cols;
-      let dsize = new cv.Size(cols, rows);
+    function transformBizCard(lensIm, fromMat) {
+      const rows = lensIm.rows;
+      const cols = lensIm.cols;
+      const dsize = new cv.Size(cols, rows);
       // 透視投影変換用の2D座標生成（左上→右上→右下→左下）
-      const toPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-        0, 0, cols, 0, cols, rows, 0, rows
+      const toMat = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        0, 0,
+        cols, 0,
+        cols, rows,
+        0, rows
       ]);
-      // 透視投影変換の変換行列を計算
-      const matrix = cv.findHomography(fromPts, toPts);
-      // 透視投影変換を実行
-      let transformedIm = new cv.Mat();
-      cv.warpPerspective(im, transformedIm, matrix, dsize, cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar());
-      fromPts.delete();
-      toPts.delete();
-      cv.imshow(BizCard.hiDPICanvas, transformedIm);
-      transformedIm.delete();
+      // 射影変換の変換行列を計算
+      const matrix = cv.findHomography(fromMat, toMat);
+      // 射影変換を実行
+      let outputIm = new cv.Mat();
+      cv.warpPerspective(lensIm, outputIm, matrix, dsize, cv.INTER_CUBIC, cv.BORDER_CONSTANT, new cv.Scalar());
+      // 射影変換後のイメージをHiDPIキャンバスに描画
+      cv.imshow(BizCard.hiDPICanvas, outputIm);
+      fromMat.delete();
+      toMat.delete();
+      outputIm.delete();
     }
 
     /**
@@ -580,10 +551,10 @@
     function transformCheck() {
       try {
         BizCard.drawLens2HiDPICanvas();
-        const im = cv.imread(BizCard.hiDPICanvas);
+        const lensIm = cv.imread(BizCard.hiDPICanvas);
         // グレースケール処理
         let im_gray = new cv.Mat();
-        cv.cvtColor(im, im_gray, cv.COLOR_RGBA2GRAY);
+        cv.cvtColor(lensIm, im_gray, cv.COLOR_RGBA2GRAY);
         // 2値化処理（白／黒化）
         let threshold_im = new cv.Mat();
         cv.threshold(im_gray, threshold_im, BizCard.THRESHOLD, 255, cv.THRESH_BINARY);
@@ -593,7 +564,7 @@
         let hierarchy = new cv.Mat();
         cv.findContours(threshold_im, contours, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
         // カメラ領域を算出
-        const cameraInfo = calcCameraAreaSize();
+        const cameraInfo = BizCard.calcCameraAreaSize();
         // hidpiエリアの面積算出
         const hidpiAreaSize = BizCard.hiDPICanvas.width * BizCard.hiDPICanvas.height;
         // hidpiエリアの40%以上の面積を持つ輪郭を対象とする
@@ -640,19 +611,22 @@
         hierarchy.delete();
         im_gray.delete();
         threshold_im.delete();
-        im.delete();
+        lensIm.delete();
       } catch(e) {
         alert(e);
       }
       BizCard.transformCheckRequestId = requestAnimationFrame(transformCheck);
     }
 
-    function loading(visibled) {
-      const loading = document.getElementById('loading');
+    /**
+     * 処理中画面の表示切替処理。
+     */
+    BizCard.processing = function(visibled) {
+      const element = document.getElementById('processing');
       if (visibled) {
-        loading.style.display = 'block';
+        element.style.display = 'block';
       } else {
-        loading.style.display = 'none';
+        element.style.display = 'none';
       }
     }
 

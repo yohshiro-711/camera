@@ -1,0 +1,365 @@
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="/opencv.js"></script>
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      overflow-x: hidden;
+    }
+    #camera_area {
+      position: absolute;
+      top: -9000px;
+      left: -0px;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+    }
+    #canvas_display {
+      width: 100%;
+      height: 100%;
+    }
+    #clip_overlay {
+      position: absolute;
+      background-color: rgba(31, 42, 166, 0.8);
+      inset: 0;
+      z-index: 1000;
+    }
+    #cameraMode {
+      position: absolute;
+      right: 30px;
+      top: 20px;
+      z-index: 9999999;
+    }
+    #saveInfo {
+      position: absolute;
+      color: white;
+      right: 10px;
+      top: 20px;
+      z-index: 9999999;
+    }
+    #saveFullHD {
+      position: absolute;
+      right: 10px;
+      top: 15px;
+      z-index: 10000;
+      width: 90px;
+      height: 35px;
+    }
+
+    /* 処理中画面 */
+    #processing {
+      position: absolute;
+      width: 100vw;
+      height: 100vh;
+      transition: all 1s;
+      background-color: #000;
+      opacity: 0.6;
+      z-index: 999999;
+      display: none;
+    }
+    .spinner {
+      width: 100px;
+      height: 100px;
+      margin: 200px auto;
+      background-color: #fff;
+      border-radius: 100%;
+      animation: sk-scaleout 1.0s infinite ease-in-out;
+    }
+    /* ローディングアニメーション */
+    @keyframes sk-scaleout {
+      0% {
+        transform: scale(0);
+      } 100% {
+        transform: scale(2.0);
+        opacity: 0;
+      }
+    }
+
+  </style>
+
+</head>
+<body>
+
+  <!-- 処理中画面 -->
+  <div id="processing">
+    <div class="spinner"></div>
+  </div>
+
+  <div>
+    <video id="camera_area" playsinline></video>
+    <canvas id="canvas_display"></canvas>
+    <div id="clip_overlay" style="display: none;"></div>
+    <canvas id="hidpiCanvas" style="display: none;"></canvas>
+    <div id="cameraMode">
+      <input type="radio" name="cameraResolution" value="2k" onchange="BizCard.changeFullHDMode();">2k
+      <input type="radio" name="cameraResolution" value="4k" onchange="BizCard.change4kMode();">4k
+    </div>
+  </div>
+
+  <audio id="btn_audio">
+    <source src="camera.mp3" type="audio/mp3">
+  </audio>
+</body>
+
+  <script type="text/javascript">
+
+    window.BizCard = {};
+
+    // 一般的な名刺のピクセルサイズ
+    const BIZ_CARD_W = 1254;
+    const BIZ_CARD_H = 758;
+    // 名刺サイズのアスペクト比
+    const BIZ_CARD_ASPECT_RATE = BIZ_CARD_W / BIZ_CARD_H;
+
+    // カメラ撮影エリアのサイズ
+    const CAMERA_LENS_W = 400;
+    const CAMERA_LENS_H = 240;
+
+    const DIRECTION_V = 1;
+    const DIRECTION_H = 2;
+
+    const THRESHOLD = 150;
+
+    // 現在の端末向き
+    window.currentDirection = 0;
+
+    window.transformCheckRequestId = null;
+
+    // Video要素
+    window.BizCard.video = document.getElementById('camera_area');
+    // カメラ描画用キャンバス
+    window.BizCard.canvasDisplay = document.getElementById('canvas_display');
+
+    // 描画用リクエストID
+    window.BizCard.redrawRequestId = null;
+
+    // カメラの解像度
+    window.BizCard.cameraResolutionWidth = 0;
+    window.BizCard.cameraResolutionHeight = 0;
+
+    window.addEventListener("load", (event) => {
+      // 端末の向きを取得
+      window.currentDirection = getScreenDirection();
+      BizCard.video.onloadedmetadata = () => {
+        BizCard.video.play();
+      };
+      BizCard.canvasDisplay.style.width = '100%';
+      BizCard.canvasDisplay.style.height = '100%';
+    });
+
+    /**
+     * resizeイベントで画面の向きに変化があったか検知する.
+     */
+    window.addEventListener("resize", () => {
+      // 端末の向きを取得
+      const direction = getScreenDirection();
+      // 端末の向きの変化があるか判定
+      const changed = (direction !== window.currentDirection);
+      // 端末向きを保存
+      window.currentDirection = direction;
+      // 端末の向きが変化した場合はカメラの再セットアップ
+      if (changed) {
+        // videoが再生中の場合、videoを再セットアップ
+        if (!BizCard.video.paused) {
+          BizCard.initCamera();
+        }
+      }
+    });
+
+    BizCard.change4kMode = function () {
+      BizCard.cameraResolutionWidth = 3840;
+      BizCard.cameraResolutionHeight = 2160;
+      BizCard.canvasDisplay.width = BizCard.cameraResolutionWidth;
+      BizCard.canvasDisplay.height = BizCard.cameraResolutionHeight;
+      BizCard.initCamera();
+    };
+
+    BizCard.changeFullHDMode = function () {
+      BizCard.cameraResolutionWidth = 1920;
+      BizCard.cameraResolutionHeight = 1080;
+      BizCard.canvasDisplay.width = BizCard.cameraResolutionWidth;
+      BizCard.canvasDisplay.height = BizCard.cameraResolutionHeight;
+      BizCard.initCamera();
+    };
+
+    BizCard.initCamera = function () {
+      setupCamera();
+      if (BizCard.redrawRequestId) {
+        // スケジュールされている射影変換可否判定ループを終了
+        window.cancelAnimationFrame(transformProcess);
+      }
+      BizCard.redrawRequestId = requestAnimationFrame(transformProcess);
+    };
+
+    function transformProcess() {
+      // キャンバスのコンテキストを取得
+      const context = BizCard.canvasDisplay.getContext('2d');
+      // カメラの映像をキャンバスに描画
+      context.drawImage(BizCard.video, 0, 0, BizCard.canvasDisplay.width, BizCard.canvasDisplay.height);
+      drawBizCardContours();
+      BizCard.redrawRequestId = requestAnimationFrame(transformProcess);
+    }
+
+    async function setupCamera() {
+      // フロントカメラIDを取得
+      const frontDeviceId = await getFrontDeviceId();
+      try {
+        // Video要素のサイズを取得
+        const video = document.getElementById('camera_area');
+        // 端末の縦向き、横向き判定
+        const angle = getScreenAngle();
+        // facingMode: { exact: "environment" }でbackカメラに切り替えれるとドキュメントに記載されているが
+        // 機種によって動作しない？Surface Duo2だとDeviceIdを指定しないと常にfrontカメラになる
+        const constraints = {
+          audio: false,
+          video: {
+            //width: cameraInfo.cameraResolutionWidth,
+            //height: cameraInfo.cameraResolutionHeight,
+            facingMode: { exact: "environment" },
+            frameRate: { ideal: 60, min: 30, max: 60}
+          },
+          deviceId: { exact: frontDeviceId }
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // video要素にストリームを設定してカメラの投影を開始
+        video.srcObject = stream;
+      } catch (err) {
+        console.log(err);
+        alert(err.toString());
+      }
+    }
+
+    /**
+     * フロントカメラのデバイスIDを取得する.
+     */
+    async function getFrontDeviceId() {
+      let frontDeviceId;
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      try {
+        // 端末のデバイスID一覧を取得（front camera, back camera）
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        if (devices.length > 0) {
+          frontDeviceId = devices[0].deviceId;
+        }
+        // front, backカメラを検出
+        devices.forEach(device => {
+          if (device.kind === 'videoinput') {
+            if (device.label && device.label.length > 0) {
+              // 機種によってデバイスの名前が異なるかも？
+              // TODO: front, backの部分一致で取得できない可能性あり
+              if (device.label.toLowerCase().indexOf('front') >= 0) {
+                frontDeviceId = device.deviceId;
+              }
+            }
+          }
+        });
+      } catch (e) {
+        alert(e.toString());
+      } finally {
+        const tracks = tempStream.getTracks()
+        if (tracks) {
+          tracks.forEach(track => track.stop());
+        }
+      }
+      return frontDeviceId;
+    }
+
+    /**
+     * 処理中画面の表示制御.
+     */
+    function processing(visibled) {
+      const element = document.getElementById('processing');
+      if (visibled) {
+        element.style.display = 'block';
+      } else {
+        element.style.display = 'none';
+      }
+    }
+
+    /**
+     * 画面の向きを取得.
+     * @return 画面向き（0:縦、180:縦反対、90:横、-90(270):横反対）
+     */
+     function getScreenAngle() {
+      // safariを考慮して画面の向きを取得
+      return (window.orientation || window.screen.orientation.angle);
+    }
+
+    /**
+     * 端末の向きを取得。
+     */
+    function getScreenDirection() {
+      const angle = getScreenAngle();
+      if (angle === 0 || angle === 180) {
+        return DIRECTION_V;
+      } else if (angle === 90 || angle === -90 || angle == 270) {
+        return DIRECTION_H;
+      } else {
+        throw Error('Unknown Screen Angle: ' + angle);
+      }
+    }
+
+    function drawBizCardContours() {
+      const im = cv.imread(BizCard.canvasDisplay);
+      // グレースケール処理
+      let im_gray = new cv.Mat();
+      cv.cvtColor(im, im_gray, cv.COLOR_RGBA2GRAY);
+      // 2値化処理
+      let threshold_im = new cv.Mat();
+      cv.threshold(im_gray, threshold_im, THRESHOLD, 255, cv.THRESH_BINARY);
+      // キャンバスに描画されている名刺の輪郭を取得
+      // ※この輪郭取得では、名刺エリア内にある様々な形状が取得される
+      let contours = new cv.MatVector();
+      let hierarchy = new cv.Mat();
+      cv.findContours(threshold_im, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      // 名刺エリアの特定用オブジェクト
+      let target = {
+        areaSize: 0,
+        contour: null,
+        i: 0
+      };
+      // 名刺の外枠を特定する
+      const red = new cv.Scalar(255, 0, 0, 255);
+      for (let i = 0; i < contours.size(); i++) {
+        let contour = contours.get(i);
+        // 輪郭の面積を算出
+        const areaSize = cv.contourArea(contour);
+        // 面積が最も大きい輪郭を特定する
+        if (target.areaSize <= areaSize) {
+          target.areaSize = areaSize;
+          target.contour = contour;
+          target.i = i;
+        }
+        cv.drawContours(im, contours, i, red, 2);
+      }
+      try {
+        if (target.contour) {
+          // 輪郭から頂点座標を算出する
+          let approx = new cv.Mat();
+          // 輪郭の周囲の長さを算出
+          const epsilon = 0.02 * cv.arcLength(target.contour, true);
+          // 輪郭のポリゴンを近似し、四角形になるようにする
+          // ※epsilonの割合により近似の粒度が変わる。epsilonが小さすぎると四角形にならない（頂点が5個以上になる）
+          cv.approxPolyDP(target.contour, approx, epsilon, true);
+          if (approx.size().width === 1 && approx.size().height === 4) {
+            cv.drawContours(im, contours, target.i, new cv.Scalar(0, 255, 0, 255), 20);
+          }
+          approx.delete();
+        }
+      } catch (e) {
+        alert(e);
+      }
+      cv.imshow(BizCard.canvasDisplay, im);
+      contours.delete();
+      hierarchy.delete();
+      im_gray.delete();
+      threshold_im.delete();
+      im.delete();
+    }
+
+  </script>
+
+</html>
