@@ -132,18 +132,18 @@
   <div>
     <div id="transformState"></div>
 
-    <video id="camera_area" playsinline onClick="saveWrap();"></video>
+    <video id="camera_area" playsinline onClick="BizCard.saveBizCard();"></video>
     <div id="clip_overlay"></div>
 
     <canvas id="hidpiCanvas" style="display: none;"></canvas>
-    <button id="saveFullHD" onClick="BizCard.startCamera();">カメラ起動</button>
+    <button id="saveFullHD" onClick="BizCard.initialize();">カメラ起動</button>
 
     <label class="toggle-button-002">
       <input id="trimEnabled" type="checkbox" checked="true"/>
     </label>
   </div>
 
-  <audio id="btn_audio">
+  <audio id="shutter_sound">
     <source src="camera.mp3" type="audio/mp3">
   </audio>
 </body>
@@ -164,6 +164,11 @@
 
     // 二値化用の閾値
     BizCard.THRESHOLD = 150;
+    // カメラの解像度係数
+    BizCard.CAMERA_RESOLUTION_COEFF = 2.5;
+
+    // 名刺範囲チェック間隔
+    BizCard.CHECK_FPS = 5;
 
     // HiDPIキャンバス
     BizCard.hiDPICanvas = document.getElementById('hidpiCanvas');
@@ -171,12 +176,17 @@
     BizCard.video = document.getElementById('camera_area');
     // レンズエリアのオーバーレイ要素
     BizCard.clipOverlay = document.getElementById('clip_overlay');
+    // シャッター音
+    BizCard.shutterSound = document.getElementById('shutter_sound');
 
     // 現在の端末向き
     BizCard.currentDirection = 0;
-
+    // 名刺撮影範囲チェックの描画リクエストID
     BizCard.transformCheckRequestId = null;
 
+    /**
+     * 名刺撮影処理の初期化を実行.
+     */
     window.addEventListener("load", (event) => {
       // 端末の向きを取得
       BizCard.currentDirection = BizCard.getScreenDirection();
@@ -200,32 +210,31 @@
         // videoが再生中の場合、videoを再セットアップ
         if (!BizCard.video.paused) {
           // 変化した向きに合わせてカメラを再セットアップ
-          initVideo();
+          BizCard.initialize();
         }
       }
     });
 
-    BizCard.startCamera = function () {
+    /**
+     * 初期化処理.
+     */
+    BizCard.initialize = async function () {
       try {
-        initVideo();
+        if (BizCard.transformCheckRequestId) {
+          // スケジュールされている射影変換可否判定ループを終了
+          cancelAnimationFrame(BizCard.transformCheckRequestId);
+        }
+        // 射影変換の可否判定ループ
+        BizCard.loopTransformCheck();
+        // カメラのレンズエリアを作成
+        BizCard.clipCameraLens();
+        // キャンバスのHiDPI化
+        BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
+        // カメラのセットアップを実行
+        await BizCard.setupCamera();
       } catch (e) {
-        alert(e);
+        alert(`initialize:${e}`);
       }
-    }
-
-    async function initVideo() {
-      if (BizCard.transformCheckRequestId) {
-        // スケジュールされている射影変換可否判定ループを終了
-        cancelAnimationFrame(BizCard.transformCheckRequestId);
-      }
-      // 射影変換の可否判定ループ
-      BizCard.transformCheckRequestId = requestAnimationFrame(transformCheck);
-      // カメラのレンズエリアを作成
-      BizCard.clipCameraLens();
-      // キャンバスのHiDPI化
-      BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
-      // カメラのセットアップを実行
-      await BizCard.setupCamera();
     }
   
     /**
@@ -254,8 +263,8 @@
         videoHeight: BizCard.video.clientHeight
       };
       // カメラの解像度を設定
-      size.cameraResolutionWidth = size.clientWidth * 2.5;
-      size.cameraResolutionHeight = size.clientHeight * 2.5;
+      size.cameraResolutionWidth = size.clientWidth * BizCard.CAMERA_RESOLUTION_COEFF;
+      size.cameraResolutionHeight = size.clientHeight * BizCard.CAMERA_RESOLUTION_COEFF;
       // 画面のアスペクト比を算出
       const screenAspectRate = window.innerWidth / window.innerHeight;
       // 端末の画面アスペクト比に合わせてレンズエリア（名刺サイズ）をスケーリング
@@ -337,18 +346,54 @@
       context.scale(window.devicePixelRatio, window.devicePixelRatio);
     }
 
-    function saveWrap() {
-      try {
-        BizCard.processing(true);
-        const audio = document.getElementById('btn_audio');
-        audio.currentTime = 0;
-        audio.play();
-        setTimeout(() => {
-          saveBizCard();
-        }, 100)
-      } catch (e) {
-        alert(e);
+    /**
+     * 名刺撮影を実行.
+     */
+    BizCard.saveBizCard = function () {
+      // streamが取得できない場合はカメラが起動していないと見なす
+      if (!BizCard.video.srcObject) {
+        alert('カメラが起動していません。');
+        return;
       }
+      // インジケーターを表示
+      BizCard.processing(true);
+      // シャッター音を鳴らす
+      BizCard.shutterSound.currentTime = 0;
+      BizCard.shutterSound.play();
+      setTimeout(() => {
+        try {
+          // 撮影範囲をHiDPIキャンバスに転送
+          BizCard.drawLens2HiDPICanvas();
+          // トリミングトグルを取得
+          const checkBox = document.getElementById('trimEnabled');
+          // トリミングトグルが有効になっている場合は射影変換を実行
+          if (checkBox.checked) {
+            // 撮影したレンズエリアのイメージを取得
+            const lensIm = cv.imread(BizCard.hiDPICanvas);
+            try {
+              // カメラ撮影領域内にある名刺の輪郭を取得
+              const fromMat = BizCard.getBizCardContoursPoints(lensIm);
+              if (fromMat) {
+                // 輪郭が取得できていれば射影変換を実行
+                BizCard.transformBizCard(lensIm, fromMat);
+              }
+            } finally {
+              lensIm.delete();
+            }
+          }
+          // jpeg(圧縮率90%)でダウンロード
+          const data = BizCard.hiDPICanvas.toDataURL("image/jpeg", 0.9);
+          const a = document.createElement("a");
+          a.href = data;
+          a.download = "biz_card.jpg";
+          a.click();
+          // 処理中画面を非表示
+          BizCard.processing(false);
+          BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
+        } catch (e) {
+          alert(`error: ${e}`);
+        }
+      }, 100);
     }
 
     /**
@@ -373,38 +418,6 @@
     }
 
     /**
-     * 保存
-     */
-    function saveBizCard() {
-      // streamが取得できない場合はカメラが起動していないと見なす
-      if (!BizCard.video.srcObject) {
-        alert('カメラが起動していません。');
-        return;
-      }
-      // 撮影範囲をHiDPIキャンバスに転送
-      BizCard.drawLens2HiDPICanvas();
-      try {
-        // トリミングトグルを取得
-        const checkBox = document.getElementById('trimEnabled');
-        // トリミングトグルが有効になっている場合は射影変換を実行
-        if (checkBox.checked) {
-          transform();
-        }
-      } catch (e) {
-        alert("error: " + e.toString());
-      }
-      // jpeg(圧縮率90%)でダウンロード
-      const data = BizCard.hiDPICanvas.toDataURL("image/jpeg", 0.9);
-      const a = document.createElement("a");
-      a.href = data;
-      a.download = "biz_card.jpg";
-      a.click();
-      // 処理中画面を非表示
-      BizCard.processing(false);
-      BizCard.setupHiDpiCanvas(BizCard.hiDPICanvas);
-    }
-
-    /**
      * 端末の向きを取得。
      */
     BizCard.getScreenDirection = function() {
@@ -419,27 +432,12 @@
     }
 
     /**
-     * カメラ撮影領域の射影変換処理。
+     * 名刺輪郭の座標情報を取得します.
+     * 
+     * @param lensIm 撮影したレンズエリアのイメージ
+     * @return 名刺範囲の頂点情報
      */
-    function transform() {
-      // レンズエリアを
-      const lensIm = cv.imread(BizCard.hiDPICanvas);
-      try {
-        // カメラ撮影領域内にある名刺の輪郭を取得
-        const fromMat = getBizCardContoursPoints(lensIm);
-        if (fromMat) {
-          // 輪郭が取得できていれば射影変換を実行
-          transformBizCard(lensIm, fromMat);
-        }
-      } finally {
-        lensIm.delete();
-      }
-    }
-
-    /**
-     * 名刺輪郭の座標情報を取得します。
-     */
-    function getBizCardContoursPoints(lensIm) {
+    BizCard.getBizCardContoursPoints = function (lensIm) {
       // グレースケール処理
       const im_gray = new cv.Mat();
       cv.cvtColor(lensIm, im_gray, cv.COLOR_RGBA2GRAY);
@@ -478,7 +476,7 @@
       // 輪郭から頂点座標を算出する
       let approx = new cv.Mat();
       // 輪郭の周囲の長さを算出
-      const epsilon = 0.02 * cv.arcLength(target.contour, true);
+      const epsilon = 0.01 * cv.arcLength(target.contour, true);
       // 輪郭のポリゴンを近似し、四角形になるようにする
       // ※epsilonの割合により近似の粒度が変わる。epsilonが小さすぎると四角形にならない（頂点が5個以上になる）
       cv.approxPolyDP(target.contour, approx, epsilon, true);
@@ -493,7 +491,7 @@
       ];
       approx.delete();
       // 左上→右上→右下→左下になるように頂点をソートする
-      const newList = sortVertices(vertices);
+      const newList = BizCard.sortVertices(vertices);
       // 頂点の起点を調整したMatを作成
       const fromMat = cv.matFromArray(4, 1, cv.CV_32FC2, [
         newList[0].x, newList[0].y,
@@ -504,7 +502,13 @@
       return fromMat;
     }
 
-    function transformBizCard(lensIm, fromMat) {
+    /**
+     * 切り取った名刺画像の射影変換処理.
+     * 
+     * @param lensIm 撮影したレンズエリアのイメージ
+     * @param fromMat 射影変換対象のMat
+     */
+    BizCard.transformBizCard = function (lensIm, fromMat) {
       const rows = lensIm.rows;
       const cols = lensIm.cols;
       const dsize = new cv.Size(cols, rows);
@@ -531,7 +535,7 @@
      * 頂点のソート処理。
      * 左上→右上→右下→左下の順になるようにソートする。
      */
-    function sortVertices(vertices) {
+    BizCard.sortVertices = function (vertices) {
       let result = [];
       // y軸で昇順ソートし、左上、右上の頂点を特定
       vertices.sort((a, b) => a.y - b.y);
@@ -548,7 +552,24 @@
       return result;
     }
 
-    function transformCheck() {
+    /**
+     * 名刺撮影範囲のチェックループ処理.
+     */
+    BizCard.loopTransformCheck = function () {
+      // requestAnimationFrameにより名刺撮影範囲チェックをループ実行すると
+      // １秒当たりのチェック回数がとても多くなるため、1秒あたり5回チェックを実行する
+      // ※スマホのバッテリー消費を抑える
+      setTimeout (() => {
+        BizCard.transformCheckRequestId = requestAnimationFrame(BizCard.loopTransformCheck);
+        // 名刺変換範囲のチェックを実行
+        BizCard.transformCheckProcess();
+      }, 1000 / BizCard.CHECK_FPS);
+    }
+
+    /**
+     * 
+     */
+    BizCard.transformCheckProcess = function () {
       try {
         BizCard.drawLens2HiDPICanvas();
         const lensIm = cv.imread(BizCard.hiDPICanvas);
@@ -592,7 +613,7 @@
           // 輪郭から頂点座標を算出する
           let approx = new cv.Mat();
           // 輪郭の周囲の長さを算出
-          const epsilon = 0.02 * cv.arcLength(target.contour, true);
+          const epsilon = 0.01 * cv.arcLength(target.contour, true);
           // 輪郭のポリゴンを近似し、四角形になるようにする
           // ※epsilonの割合により近似の粒度が変わる。epsilonが小さすぎると四角形にならない（頂点が5個以上になる）
           cv.approxPolyDP(target.contour, approx, epsilon, true);
@@ -615,7 +636,7 @@
       } catch(e) {
         alert(e);
       }
-      BizCard.transformCheckRequestId = requestAnimationFrame(transformCheck);
+      //BizCard.transformCheckRequestId = requestAnimationFrame(transformCheck);
     }
 
     /**
