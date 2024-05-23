@@ -1,0 +1,75 @@
+<html lang="ja">
+<head>
+  <style type="text/css">
+    body {
+      background-color: #ffe4b5;
+    }
+    .box1 {
+      position: absolute;
+      background: #ff9999;
+      width: 100px;
+      height: 80px;
+      border-radius: 5px;
+      box-shadow: rgba(50, 50, 93, 0.25) 0px 13px 27px -5px, rgba(0, 0, 0, 0.3) 0px 8px 16px -8px;
+    }
+  </style>
+  <script type="text/javascript">
+    class DragDropComponent {
+      constructor(targetElement, dragElement) {
+        this.targetElement = targetElement;
+        this.dragElement = dragElement;
+        this.mouseDowned = false;
+        this.baseX = 0;
+        this.baseY = 0;
+        this.dragElement.addEventListener('mousedown', event => this.mouseDownEvent(event));
+        this.dragElement.addEventListener('mousemove', event => this.mouseMoveEvent(event));
+        this.dragElement.addEventListener('mouseup', event => this.mouseUpEvent(event));
+        //this.dragElement.addEventListener('mouseout', event => this.mouseOutEvent(event));
+      }
+      mouseDownEvent(event) {
+        this.mouseDowned = true;
+        this.baseX = event.pageX - this.targetElement.offsetLeft;
+        this.baseY = event.pageY - this.targetElement.offsetTop;
+      }
+      mouseMoveEvent(event) {
+        event.preventDefault();
+        if (this.mouseDowned) {
+          this.targetElement.style.left = (event.pageX - this.baseX) + 'px';
+          this.targetElement.style.top = (event.pageY - this.baseY) + 'px';
+        }
+      }
+      mouseUpEvent(event) {
+        this.mouseDowned = false;
+      }
+      mouseOutEvent(event) {
+        this.mouseDowned = false;
+      }
+    }
+    window.onload = () => {
+      const div1 = document.querySelector('#target1');
+      new DragDropComponent(div1, div1);
+      const div2 = document.querySelector('#target2');
+      new DragDropComponent(div2, div2);
+      const div3 = document.querySelector('#target3');
+      const sub3 = document.querySelector('#target3-sub');
+      new DragDropComponent(div3, sub3);
+      // マウス座標情報の表示
+      const mouseInfoDiv = document.createElement("div");
+      document.body.appendChild(mouseInfoDiv);
+      document.addEventListener("mousemove", function (e) {
+        mouseInfoDiv.setAttribute("style", "position: absolute; top:" + e.pageY + "px; left: " + (e.pageX + 20) + "px;");
+        mouseInfoDiv.innerText = "X: " + e.x + ", Y: " + e.y + ", pageX: " + e.pageX + ", pageY: " + e.pageY;
+      });
+    };
+  </script>
+</head>
+
+<body>
+  <div id="target1" class="box1" style="left: 10px; top: 20px;"></div>
+  <div id="target2" class="box1" style="left: 200px; top: 200px;"></div>
+  <div id="target3" class="box1" style="left: 330px; top: 40px;">
+    <div id="target3-sub" style="width: 100%; height: 20px; background-color: red;"></div>
+  </div>
+</body>
+
+</html>
