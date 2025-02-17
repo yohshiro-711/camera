@@ -1,0 +1,128 @@
+:root {
+  --primary: #227093;
+  /* Theme color */
+  --theme: var(--primary);
+}
+
+.description {
+  border-radius: 0.5rem;
+  border: 1px solid;
+}
+
+/*
+ * アコーディオンのトップ<div>要素に指定する.
+ * アコーディオン外枠の装飾、背景色を設定する.
+ */
+.accordion {
+  border: 2px solid;
+  background-color: var(--theme);
+  border-color: var(--theme);
+  overflow: hidden;
+}
+
+/*
+ * アコーディオンヘッダのタイトルスタイル.
+ * 疑似要素でアイコンを右側に表示するようにflex設定を行う.
+ */
+.accordion .accordion-title {
+  padding: 1rem;
+  color: #ffffff;
+  display: flex !important;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+}
+
+/*
+ * アコーディオンを閉じているときのデフォルトアイコンを疑似要素に設定.
+ * "\25B6" ⇒ "▶"
+ * 
+ * transform: rotate(90deg)
+ *   -> "▶" を90度回転して下向きにする
+ * transition: all 0.35s
+ *   -> 回転するのを0.3sで完了するように設定（アニメーション）
+ */
+.accordion .accordion-title:after {
+  content: "\25B6";
+  width: 1rem;
+  height: 1rem;
+  line-height: 1rem;
+  text-align: center;
+  transform: rotate(90deg);
+  transition: transform 0.3s ease-in-out;
+}
+
+/*
+ * アコーディオン展開時のアイコンを疑似要素に設定.
+ *
+ * transform: rotate(270deg)
+ *   -> ">" を270度回転して上向きにする
+ */
+.accordion .accordion-title:has(input:checked)::after {
+  transform: rotate(270deg);
+}
+
+/*
+ * チェックボックスを透明にする.
+ */
+.production-mode .accordion .accordion-title input {
+  position: absolute;
+  opacity: 0;
+  z-index: -1;
+}
+
+/*
+ * アコーディオンのコンテンツ外側エリアに適用するCSS.
+ */
+.accordion .accordion-content {
+  background-color: #ffffff;
+}
+
+/*
+ * アコーディオンのコンテンツ内部エリアに適用するCSS.
+ * accordion-content-innerが指定されている要素に入力項目等を配置する
+ */
+.accordion .accordion-content > .accordion-content-inner {
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+/*
+ * アコーディオンを閉じているときのコンテンツエリア設定.
+ * アコーディオンのOpen/Closeはmax-heightで行う.
+ * Close時はmax-height: 0
+ * アコーディオンヘッダのチェックボックスをONにしたときにmax-heightを設定することで展開する.
+ *
+ * overflow: hidden
+ *  -> max-heightを0にするとコンテンツに配置したエレメントがはみ出るため、はみ出ないように設定
+ * visibility: hidden
+ *  -> アコーディオンが閉じているときにフォーカスが移らないようにする
+ * transition: max-height 0.35s ease, visibility 0.35s ease;
+ *  -> アコーディオンOpen/Close時のアニメーション時間
+ */
+.production-mode .accordion .accordion-content {
+  max-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: max-height 0.35s ease, visibility 0.35s ease;
+}
+
+/*
+ * <div class="accordion">
+ *     <div>
+ *         <label class="accordion-title">
+ *             <input type="checkbox">
+ *         </label>
+ *     </div>
+ *     <div class="accordion-content">
+ *     </div>
+ * </div>
+ *
+ * 以下のCSS定義の意味は、
+ * .accordion配下に.accordion-titleがあり、且つ チェックボックスがONになっていれば、
+ * .accordion配下の.accordion-contentに対してスタイルを適用するという意味になる.
+ */
+.accordion:has(.accordion-title):has(input:checked) > .accordion-content {
+  max-height: 50rem;
+  visibility: visible;
+}
